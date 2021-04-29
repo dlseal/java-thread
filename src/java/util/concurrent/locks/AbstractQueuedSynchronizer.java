@@ -383,20 +383,29 @@ public abstract class AbstractQueuedSynchronizer
         /** Marker to indicate a node is waiting in exclusive mode */
         static final Node EXCLUSIVE = null;
 
+        // 线程取消
         /** waitStatus value to indicate thread has cancelled */
         static final int CANCELLED =  1;
+
+        // 表明后继节点的线程需要unpark
         /** waitStatus value to indicate successor's thread needs unparking */
         static final int SIGNAL    = -1;
+
+        //等待条件
         /** waitStatus value to indicate thread is waiting on condition */
         static final int CONDITION = -2;
         /**
          * waitStatus value to indicate the next acquireShared should
          * unconditionally propagate
          */
+        // 表明下一个共享模式的节点需要无条件传播共享
         static final int PROPAGATE = -3;
 
         /**
          * Status field, taking on only the values:
+         * 后继节点被阻塞（park）,因此当前节点在释放或者取消时必须unpark后继节点，
+         * 为了避免风险，尝试获取锁的方法必须第一时间设置signal，之后可以自动尝试获取锁，获取失败阻塞。
+         * 就是说获取锁的节点的状态第一时间要设置成singal。
          *   SIGNAL:     The successor of this node is (or will soon be)
          *               blocked (via park), so the current node must
          *               unpark its successor when it releases or
@@ -404,15 +413,18 @@ public abstract class AbstractQueuedSynchronizer
          *               first indicate they need a signal,
          *               then retry the atomic acquire, and then,
          *               on failure, block.
+         *               节点取消，由于超时或者中断
          *   CANCELLED:  This node is cancelled due to timeout or interrupt.
          *               Nodes never leave this state. In particular,
          *               a thread with cancelled node never again blocks.
+         *               当前节点处于条件队列。节点不会当作同步队列的节点直到某个时刻将状态转换为0
          *   CONDITION:  This node is currently on a condition queue.
          *               It will not be used as a sync queue node
          *               until transferred, at which time the status
          *               will be set to 0. (Use of this value here has
          *               nothing to do with the other uses of the
          *               field, but simplifies mechanics.)
+         *               共享释放应当被传播到其他节点，其在共享释放方法中设置（仅头节点）确保能传播下去，之后进行其他操作
          *   PROPAGATE:  A releaseShared should be propagated to other
          *               nodes. This is set (for head node only) in
          *               doReleaseShared to ensure propagation
@@ -420,19 +432,21 @@ public abstract class AbstractQueuedSynchronizer
          *               since intervened.
          *   0:          None of the above
          *
+         * 这些数值排列的非常容易使用，非负数意味着节点不需要信号。因此许多代码都不用去关注具体的值
          * The values are arranged numerically to simplify use.
          * Non-negative values mean that a node doesn't need to
          * signal. So, most code doesn't need to check for particular
          * values, just for sign.
-         *
+         *同步节点和条件节点初始化为0，通过cas修改
          * The field is initialized to 0 for normal sync nodes, and
          * CONDITION for condition nodes.  It is modified using CAS
          * (or when possible, unconditional volatile writes).
          */
         volatile int waitStatus;
 
-        /**
+        /**关联当前节点节点的前驱节点，方便检查waitStatus。
          * Link to predecessor node that current node/thread relies on
+         * 入队的时候分配，出队的时候清空
          * for checking waitStatus. Assigned during enqueuing, and nulled
          * out (for sake of GC) only upon dequeuing.  Also, upon
          * cancellation of a predecessor, we short-circuit while
@@ -444,7 +458,7 @@ public abstract class AbstractQueuedSynchronizer
          */
         volatile Node prev;
 
-        /**
+        /** // 很重要
          * Link to the successor node that the current node/thread
          * unparks upon release. Assigned during enqueuing, adjusted
          * when bypassing cancelled predecessors, and nulled out (for
@@ -465,7 +479,7 @@ public abstract class AbstractQueuedSynchronizer
          */
         volatile Thread thread;
 
-        /**
+        /**表示当前noded的线程是想获取共享锁还是独占锁
          * Link to next node waiting on condition, or the special
          * value SHARED.  Because condition queues are accessed only
          * when holding in exclusive mode, we just need a simple
@@ -513,7 +527,7 @@ public abstract class AbstractQueuedSynchronizer
         }
     }
 
-    /**
+    /**head节点的thread是null,可以理解为将它的thread成员放到AQS的exclusiveOwnerThread属性上去了，所以它的thread成员为null
      * Head of the wait queue, lazily initialized.  Except for
      * initialization, it is modified only via method setHead.  Note:
      * If head exists, its waitStatus is guaranteed not to be
@@ -576,17 +590,20 @@ public abstract class AbstractQueuedSynchronizer
     static final long spinForTimeoutThreshold = 1000L;
 
     /**
-     * Inserts node into queue, initializing if necessary. See picture above.
+     * 队尾插入node
      * @param node the node to insert
      * @return node's predecessor
      */
     private Node enq(final Node node) {
         for (;;) {
             Node t = tail;
-            if (t == null) { // Must initialize
+            if (t == null) {
+                // 首次进入，必走，创建一个新的节点，队列的首位都设置为新创建的节点，相当于初始化操作
                 if (compareAndSetHead(new Node()))
                     tail = head;
             } else {
+                // 初始化之后，会进入当前条件，将需要插入的node的先驱设置为队列的队尾，同时将队尾的指针设置为当前节点。设置成功之后还需要将原队列与新队尾进行关联，同时返回插入节点的先驱
+                // 不仅仅是初始化，如果快速入队失败，则走完全入队，通过循环来cas入队
                 node.prev = t;
                 if (compareAndSetTail(t, node)) {
                     t.next = node;
@@ -605,9 +622,11 @@ public abstract class AbstractQueuedSynchronizer
     private Node addWaiter(Node mode) {
         Node node = new Node(Thread.currentThread(), mode);
         // Try the fast path of enq; backup to full enq on failure
+        // 快速入队，失败时走完全入队
         Node pred = tail;
         if (pred != null) {
             node.prev = pred;
+            // 这里存在竞争，如果cas失败，那么node.pre是成功设置值的，但是next去还没有，有可能next是null
             if (compareAndSetTail(pred, node)) {
                 pred.next = node;
                 return node;
@@ -617,7 +636,7 @@ public abstract class AbstractQueuedSynchronizer
         return node;
     }
 
-    /**
+    /**设置node为头节点。只能被acquire方法调用。同时为了GC安全和避免不必要的信号传播清除属性值
      * Sets head of queue to be node, thus dequeuing. Called only by
      * acquire methods.  Also nulls out unused fields for sake of GC
      * and to suppress unnecessary signals and traversals.
@@ -630,7 +649,7 @@ public abstract class AbstractQueuedSynchronizer
         node.prev = null;
     }
 
-    /**
+    /**唤醒后继节点，从这里可以推断出尝试获取锁为-1，没有去获取锁为0，等待被唤醒的为-2
      * Wakes up node's successor, if one exists.
      *
      * @param node the node
@@ -641,6 +660,7 @@ public abstract class AbstractQueuedSynchronizer
          * to clear in anticipation of signalling.  It is OK if this
          * fails or if status is changed by waiting thread.
          */
+        // 当前节点状态设置为0，表明当前节点已经释放锁
         int ws = node.waitStatus;
         if (ws < 0)
             compareAndSetWaitStatus(node, ws, 0);
@@ -652,29 +672,36 @@ public abstract class AbstractQueuedSynchronizer
          * non-cancelled successor.
          */
         Node s = node.next;
+        // 判断后继是否取消，如果取消则寻找一个非CANCEL状态的节点
+        // 为什么从后往前遍历？next值不可靠
         if (s == null || s.waitStatus > 0) {
             s = null;
             for (Node t = tail; t != null && t != node; t = t.prev)
                 if (t.waitStatus <= 0)
                     s = t;
         }
+        // unpark后继节点
         if (s != null)
             LockSupport.unpark(s.thread);
     }
 
-    /**
+    /** 共享模式下的资源释放，通知后继节点确保传播
      * Release action for shared mode -- signals successor and ensures
      * propagation. (Note: For exclusive mode, release just amounts
      * to calling unparkSuccessor of head if it needs signal.)
      */
     private void doReleaseShared() {
-        /*
+        /*确保即使在程序别的地方尝试或者释放能够传播的到
          * Ensure that a release propagates, even if there are other
+         * 通常是通过head调用unparkSuccessor去获取信号
          * in-progress acquires/releases.  This proceeds in the usual
          * way of trying to unparkSuccessor of head if it needs
+         * 如果不需要获取信号，则将状态设置为PROPAGATE去传播释放信号
          * signal. But if it does not, status is set to PROPAGATE to
          * ensure that upon release, propagation continues.
+         * 此外，必须通过循环去设置状态，防止新节点加入
          * Additionally, we must loop in case a new node is added
+         * 同时，不像unparkSuccessor的其他使用，必须检查cas设置值是否失败
          * while we are doing this. Also, unlike other uses of
          * unparkSuccessor, we need to know if CAS to reset status
          * fails, if so rechecking.
@@ -689,15 +716,16 @@ public abstract class AbstractQueuedSynchronizer
                     unparkSuccessor(h);
                 }
                 else if (ws == 0 &&
-                         !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
+                        !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
                     continue;                // loop on failed CAS
             }
+            // 只有头节点改变才会退出循环，也就是说doReleaseShared会一直尝试改变头节点的状态
             if (h == head)                   // loop if head changed
                 break;
         }
     }
 
-    /**
+    /**这个函数用来将传入参数设为队列的新节点，如果传参的后继是共享模式且现在要么 共享锁有剩余（propagate > 0） 要么 PROPAGATE状态被设置，那么调用doReleaseShared
      * Sets head of queue, and checks if successor may be waiting
      * in shared mode, if so propagating if either propagate > 0 or
      * PROPAGATE status was set.
@@ -725,7 +753,7 @@ public abstract class AbstractQueuedSynchronizer
          * anyway.
          */
         if (propagate > 0 || h == null || h.waitStatus < 0 ||
-            (h = head) == null || h.waitStatus < 0) {
+                (h = head) == null || h.waitStatus < 0) {
             Node s = node.next;
             if (s == null || s.isShared())
                 doReleaseShared();
@@ -769,9 +797,9 @@ public abstract class AbstractQueuedSynchronizer
             // so it will get one. Otherwise wake it up to propagate.
             int ws;
             if (pred != head &&
-                ((ws = pred.waitStatus) == Node.SIGNAL ||
-                 (ws <= 0 && compareAndSetWaitStatus(pred, ws, Node.SIGNAL))) &&
-                pred.thread != null) {
+                    ((ws = pred.waitStatus) == Node.SIGNAL ||
+                            (ws <= 0 && compareAndSetWaitStatus(pred, ws, Node.SIGNAL))) &&
+                    pred.thread != null) {
                 Node next = node.next;
                 if (next != null && next.waitStatus <= 0)
                     compareAndSetNext(pred, predNext, next);
@@ -867,7 +895,7 @@ public abstract class AbstractQueuedSynchronizer
                     return interrupted;
                 }
                 if (shouldParkAfterFailedAcquire(p, node) &&
-                    parkAndCheckInterrupt())
+                        parkAndCheckInterrupt())
                     interrupted = true;
             }
         } finally {
@@ -881,7 +909,7 @@ public abstract class AbstractQueuedSynchronizer
      * @param arg the acquire argument
      */
     private void doAcquireInterruptibly(int arg)
-        throws InterruptedException {
+            throws InterruptedException {
         final Node node = addWaiter(Node.EXCLUSIVE);
         boolean failed = true;
         try {
@@ -894,7 +922,7 @@ public abstract class AbstractQueuedSynchronizer
                     return;
                 }
                 if (shouldParkAfterFailedAcquire(p, node) &&
-                    parkAndCheckInterrupt())
+                        parkAndCheckInterrupt())
                     throw new InterruptedException();
             }
         } finally {
@@ -930,7 +958,7 @@ public abstract class AbstractQueuedSynchronizer
                 if (nanosTimeout <= 0L)
                     return false;
                 if (shouldParkAfterFailedAcquire(p, node) &&
-                    nanosTimeout > spinForTimeoutThreshold)
+                        nanosTimeout > spinForTimeoutThreshold)
                     LockSupport.parkNanos(this, nanosTimeout);
                 if (Thread.interrupted())
                     throw new InterruptedException();
@@ -964,7 +992,7 @@ public abstract class AbstractQueuedSynchronizer
                     }
                 }
                 if (shouldParkAfterFailedAcquire(p, node) &&
-                    parkAndCheckInterrupt())
+                        parkAndCheckInterrupt())
                     interrupted = true;
             }
         } finally {
@@ -978,7 +1006,7 @@ public abstract class AbstractQueuedSynchronizer
      * @param arg the acquire argument
      */
     private void doAcquireSharedInterruptibly(int arg)
-        throws InterruptedException {
+            throws InterruptedException {
         final Node node = addWaiter(Node.SHARED);
         boolean failed = true;
         try {
@@ -994,7 +1022,7 @@ public abstract class AbstractQueuedSynchronizer
                     }
                 }
                 if (shouldParkAfterFailedAcquire(p, node) &&
-                    parkAndCheckInterrupt())
+                        parkAndCheckInterrupt())
                     throw new InterruptedException();
             }
         } finally {
@@ -1033,7 +1061,7 @@ public abstract class AbstractQueuedSynchronizer
                 if (nanosTimeout <= 0L)
                     return false;
                 if (shouldParkAfterFailedAcquire(p, node) &&
-                    nanosTimeout > spinForTimeoutThreshold)
+                        nanosTimeout > spinForTimeoutThreshold)
                     LockSupport.parkNanos(this, nanosTimeout);
                 if (Thread.interrupted())
                     throw new InterruptedException();
@@ -1196,7 +1224,7 @@ public abstract class AbstractQueuedSynchronizer
      */
     public final void acquire(int arg) {
         if (!tryAcquire(arg) &&
-            acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+                acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
             selfInterrupt();
     }
 
@@ -1244,7 +1272,7 @@ public abstract class AbstractQueuedSynchronizer
         if (Thread.interrupted())
             throw new InterruptedException();
         return tryAcquire(arg) ||
-            doAcquireNanos(arg, nanosTimeout);
+                doAcquireNanos(arg, nanosTimeout);
     }
 
     /**
@@ -1325,7 +1353,7 @@ public abstract class AbstractQueuedSynchronizer
         if (Thread.interrupted())
             throw new InterruptedException();
         return tryAcquireShared(arg) >= 0 ||
-            doAcquireSharedNanos(arg, nanosTimeout);
+                doAcquireSharedNanos(arg, nanosTimeout);
     }
 
     /**
@@ -1406,9 +1434,9 @@ public abstract class AbstractQueuedSynchronizer
         Node h, s;
         Thread st;
         if (((h = head) != null && (s = h.next) != null &&
-             s.prev == head && (st = s.thread) != null) ||
-            ((h = head) != null && (s = h.next) != null &&
-             s.prev == head && (st = s.thread) != null))
+                s.prev == head && (st = s.thread) != null) ||
+                ((h = head) != null && (s = h.next) != null &&
+                        s.prev == head && (st = s.thread) != null))
             return st;
 
         /*
@@ -1461,9 +1489,9 @@ public abstract class AbstractQueuedSynchronizer
     final boolean apparentlyFirstQueuedIsExclusive() {
         Node h, s;
         return (h = head) != null &&
-            (s = h.next)  != null &&
-            !s.isShared()         &&
-            s.thread != null;
+                (s = h.next)  != null &&
+                !s.isShared()         &&
+                s.thread != null;
     }
 
     /**
@@ -1517,7 +1545,7 @@ public abstract class AbstractQueuedSynchronizer
         Node h = head;
         Node s;
         return h != t &&
-            ((s = h.next) == null || s.thread != Thread.currentThread());
+                ((s = h.next) == null || s.thread != Thread.currentThread());
     }
 
 
@@ -1616,7 +1644,7 @@ public abstract class AbstractQueuedSynchronizer
         int s = getState();
         String q  = hasQueuedThreads() ? "non" : "";
         return super.toString() +
-            "[State = " + s + ", " + q + "empty queue]";
+                "[State = " + s + ", " + q + "empty queue]";
     }
 
 
@@ -1873,7 +1901,7 @@ public abstract class AbstractQueuedSynchronizer
                     lastWaiter = null;
                 first.nextWaiter = null;
             } while (!transferForSignal(first) &&
-                     (first = firstWaiter) != null);
+                    (first = firstWaiter) != null);
         }
 
         /**
@@ -2000,8 +2028,8 @@ public abstract class AbstractQueuedSynchronizer
          */
         private int checkInterruptWhileWaiting(Node node) {
             return Thread.interrupted() ?
-                (transferAfterCancelledWait(node) ? THROW_IE : REINTERRUPT) :
-                0;
+                    (transferAfterCancelledWait(node) ? THROW_IE : REINTERRUPT) :
+                    0;
         }
 
         /**
@@ -2009,7 +2037,7 @@ public abstract class AbstractQueuedSynchronizer
          * does nothing, depending on mode.
          */
         private void reportInterruptAfterWait(int interruptMode)
-            throws InterruptedException {
+                throws InterruptedException {
             if (interruptMode == THROW_IE)
                 throw new InterruptedException();
             else if (interruptMode == REINTERRUPT)
@@ -2267,15 +2295,15 @@ public abstract class AbstractQueuedSynchronizer
     static {
         try {
             stateOffset = unsafe.objectFieldOffset
-                (AbstractQueuedSynchronizer.class.getDeclaredField("state"));
+                    (AbstractQueuedSynchronizer.class.getDeclaredField("state"));
             headOffset = unsafe.objectFieldOffset
-                (AbstractQueuedSynchronizer.class.getDeclaredField("head"));
+                    (AbstractQueuedSynchronizer.class.getDeclaredField("head"));
             tailOffset = unsafe.objectFieldOffset
-                (AbstractQueuedSynchronizer.class.getDeclaredField("tail"));
+                    (AbstractQueuedSynchronizer.class.getDeclaredField("tail"));
             waitStatusOffset = unsafe.objectFieldOffset
-                (Node.class.getDeclaredField("waitStatus"));
+                    (Node.class.getDeclaredField("waitStatus"));
             nextOffset = unsafe.objectFieldOffset
-                (Node.class.getDeclaredField("next"));
+                    (Node.class.getDeclaredField("next"));
 
         } catch (Exception ex) { throw new Error(ex); }
     }
@@ -2301,7 +2329,7 @@ public abstract class AbstractQueuedSynchronizer
                                                          int expect,
                                                          int update) {
         return unsafe.compareAndSwapInt(node, waitStatusOffset,
-                                        expect, update);
+                expect, update);
     }
 
     /**
