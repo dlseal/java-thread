@@ -86,16 +86,16 @@ import java.util.Collection;
  *     }
  *   }
  * }}</pre>
- *
+ * 除了实现lock接口，类中定义了大量锁状态检查的方法
  * <p>In addition to implementing the {@link Lock} interface, this
  * class defines a number of {@code public} and {@code protected}
  * methods for inspecting the state of the lock.  Some of these
  * methods are only useful for instrumentation and monitoring.
- *
+ *序列化行为于内置锁一致：反序列化时解锁，而不管锁序列化时的状态
  * <p>Serialization of this class behaves in the same way as built-in
  * locks: a deserialized lock is in the unlocked state, regardless of
  * its state when serialized.
- *
+ *支持2147483647次递归，超过抛出异常
  * <p>This lock supports a maximum of 2147483647 recursive locks by
  * the same thread. Attempts to exceed this limit result in
  * {@link Error} throws from locking methods.
@@ -108,7 +108,7 @@ public class ReentrantLock implements Lock, java.io.Serializable {
     /** Synchronizer providing all implementation mechanics */
     private final Sync sync;
 
-    /**
+    /**锁进行同步控制的基础。有公平和非公平两种子类实现。使用AQS的状态表示持有锁次数
      * Base of synchronization control for this lock. Subclassed
      * into fair and nonfair versions below. Uses AQS state to
      * represent the number of holds on the lock.
@@ -122,7 +122,7 @@ public class ReentrantLock implements Lock, java.io.Serializable {
          */
         abstract void lock();
 
-        /**
+        /**非公平锁获取。tryAcquire是在字类中实现
          * Performs non-fair tryLock.  tryAcquire is implemented in
          * subclasses, but both need nonfair try for trylock method.
          */
@@ -130,12 +130,14 @@ public class ReentrantLock implements Lock, java.io.Serializable {
             final Thread current = Thread.currentThread();
             int c = getState();
             if (c == 0) {
+                // 未持有锁
                 if (compareAndSetState(0, acquires)) {
                     setExclusiveOwnerThread(current);
                     return true;
                 }
             }
             else if (current == getExclusiveOwnerThread()) {
+                // 持有锁（可重入）
                 int nextc = c + acquires;
                 if (nextc < 0) // overflow
                     throw new Error("Maximum lock count exceeded");
