@@ -683,6 +683,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
 
         void interruptIfStarted() {
             Thread t;
+            // 说明的addWorker为什么会设置为-1，>=0的会被中断
             if (getState() >= 0 && (t = thread) != null && !t.isInterrupted()) {
                 try {
                     t.interrupt();
@@ -713,6 +714,10 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
     }
 
     /**
+     * 如果（关闭和池和队列为空）或（停止和池为空），则转换到 TERMINATED 状态。
+     * 如果可以终止，但workerCount不为零，则中断一个空闲的worker，以确保关闭信号传播。
+     * 必须在任何可能使终止成为可能的操作之后调用此方法 - 在关闭期间减少工作线程数或从队列中删除任务。
+     * 该方法是非私有的，允许从 ScheduledThreadPoolExecutor 访问。
      * Transitions to TERMINATED state if either (SHUTDOWN and pool
      * and queue empty) or (STOP and pool empty).  If otherwise
      * eligible to terminate but workerCount is nonzero, interrupts an
@@ -725,10 +730,12 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
     final void tryTerminate() {
         for (;;) {
             int c = ctl.get();
+            // 正在运行或大于TIDYING，或者（已经SHUTDOWN并且workQueue不空），就不终止线程池
             if (isRunning(c) ||
                 runStateAtLeast(c, TIDYING) ||
                 (runStateOf(c) == SHUTDOWN && ! workQueue.isEmpty()))
                 return;
+            // 还有工作线程，尝试中断线程一个线程，进行关闭信号传播
             if (workerCountOf(c) != 0) { // Eligible to terminate
                 interruptIdleWorkers(ONLY_ONE);
                 return;
@@ -742,6 +749,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
                         terminated();
                     } finally {
                         ctl.set(ctlOf(TERMINATED, 0));
+                        // 唤醒所有awaitTermination的线程
                         termination.signalAll();
                     }
                     return;
@@ -782,7 +790,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         }
     }
 
-    /**
+    /**中断所有线程，即使处于活动状态也是如此。忽略SecurityExceptions（在这种情况下，某些线程可能保持不中断）
      * Interrupts all threads, even if active. Ignores SecurityExceptions
      * (in which case some threads may remain uninterrupted).
      */
@@ -890,6 +898,8 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
     }
 
     /**
+     * 将任务队列排到一个新列表中，通常使用drainTo。但是如果队列是 DelayQueue 或任何其他类型的队列，
+     * 对于它的 poll 或 drainTo 可能无法删除某些元素，它会一个一个地删除它们。
      * Drains the task queue into a new list, normally using
      * drainTo. But if the queue is a DelayQueue or any other kind of
      * queue for which poll or drainTo may fail to remove some
@@ -963,10 +973,11 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
                 if (wc >= CAPACITY ||
                     wc >= (core ? corePoolSize : maximumPoolSize))
                     return false;
-                // 工作线程添加成功跳出循环，否则重新执行addWorker
+                // 工作线程数增加成功跳出循环，否则重新执行addWorker
                 if (compareAndIncrementWorkerCount(c))
                     break retry;
                 c = ctl.get();  // Re-read ctl
+                // 工作线程数增加失败，并且运行状态改变，重新执行外层循环
                 if (runStateOf(c) != rs)
                     continue retry;
                 // else CAS failed due to workerCount change; retry inner loop
@@ -1129,10 +1140,13 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         }
     }
 
-    /**
+    /**主工作线程运行循环。反复从队列中获取任务并执行，包含以下过程：
      * Main worker run loop.  Repeatedly gets tasks from queue and
      * executes them, while coping with a number of issues:
      *
+     * 我们可以从初始任务开始，在这种情况下，我们不需要获得第一个任务。否则，只要 pool 正在运行，我们就会从 getTask 获取任务。
+     * 如果它返回 null，则由于池状态或配置参数发生变化，worker 将退出。
+     * 其他退出是由于外部代码中的异常引发而导致的，在这种情况下，completedAbruptly成立，这通常导致processWorkerExit替换此线程。
      * 1. We may start out with an initial task, in which case we
      * don't need to get the first one. Otherwise, as long as pool is
      * running, we get tasks from getTask. If it returns null then the
@@ -1141,16 +1155,22 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
      * external code, in which case completedAbruptly holds, which
      * usually leads processWorkerExit to replace this thread.
      *
+     * 在运行任何任务之前，先获取锁，以防止任务执行时其他池中断，然后确保除非池正在停止，否则此线程不会设置其中断。
      * 2. Before running any task, the lock is acquired to prevent
      * other pool interrupts while the task is executing, and then we
      * ensure that unless pool is stopping, this thread does not have
      * its interrupt set.
      *
+     * 每个任务运行之前都会调用beforeExecute，这可能会引发异常，在这种情况下，
+     * 我们将导致线程死掉（中断，带有completelyAbruptly true的循环），而不处理该任务。
      * 3. Each task run is preceded by a call to beforeExecute, which
      * might throw an exception, in which case we cause thread to die
      * (breaking loop with completedAbruptly true) without processing
      * the task.
-     *
+     *假设 beforeExecute 正常完成，我们运行任务，收集它抛出的任何异常以发送到 afterExecute。
+     * 我们分别处理 RuntimeException、Error（规范保证我们捕获这两个）和任意 Throwables。
+     * 因为我们不能在 Runnable.run 中重新抛出 Throwables，所以我们在出路时将它们包装在 Errors 中（到线程的 UncaughtExceptionHandler）。
+     * 任何抛出的异常也会保守地导致线程死亡。
      * 4. Assuming beforeExecute completes normally, we run the task,
      * gathering any of its thrown exceptions to send to afterExecute.
      * We separately handle RuntimeException, Error (both of which the
@@ -1159,12 +1179,13 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
      * wrap them within Errors on the way out (to the thread's
      * UncaughtExceptionHandler).  Any thrown exception also
      * conservatively causes thread to die.
-     *
+     *task.run 完成后，我们调用afterExecute，它也可能抛出异常，也会导致线程死亡。根据 JLS Sec 14.20，即使 task.run 抛出，这个异常也会生效。
      * 5. After task.run completes, we call afterExecute, which may
      * also throw an exception, which will also cause thread to
      * die. According to JLS Sec 14.20, this exception is the one that
      * will be in effect even if task.run throws.
      *
+     * 异常机制的最终效果是 afterExecute 和线程的 UncaughtExceptionHandler 拥有我们所能提供的关于用户代码遇到的任何问题的准确信息
      * The net effect of the exception mechanics is that afterExecute
      * and the thread's UncaughtExceptionHandler have as accurate
      * information as we can provide about any problems encountered by
@@ -1437,11 +1458,11 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
      * Initiates an orderly shutdown in which previously submitted
      * tasks are executed, but no new tasks will be accepted.
      * Invocation has no additional effect if already shut down.
-     *此方法不等待先前提交的任务完成执行
+     *该方法不会等待任务执行完成再返回，而是立即返回
      * <p>This method does not wait for previously submitted tasks to
      * complete execution.  Use {@link #awaitTermination awaitTermination}
      * to do that.
-     *
+     *此方法将线程池状态置为SHUTDOWN,不接受新的任务，会等待正在执行的任务执行完成
      * @throws SecurityException {@inheritDoc}
      */
     public void shutdown() {
@@ -1462,21 +1483,26 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         tryTerminate();
     }
 
-    /**
+    /**尝试停止所有正在执行的任务，暂停正在等待的任务的处理，并返回正在等待执行的任务的列表。
+     * 从此方法返回后，这些任务将从任务队列中耗尽（删除）
      * Attempts to stop all actively executing tasks, halts the
      * processing of waiting tasks, and returns a list of the tasks
      * that were awaiting execution. These tasks are drained (removed)
      * from the task queue upon return from this method.
      *
+     * 此方法不等待主动执行的任务终止。使用awaitTermination可以做到这一点
      * <p>This method does not wait for actively executing tasks to
      * terminate.  Use {@link #awaitTermination awaitTermination} to
      * do that.
-     *
+     *除了尽最大努力尝试停止处理正在执行的任务之外，没有任何保证。
+     * 此实现通过Threadinterrupt取消任务，因此任何无法响应中断的任务都可能永远不会终止。
      * <p>There are no guarantees beyond best-effort attempts to stop
      * processing actively executing tasks.  This implementation
      * cancels tasks via {@link Thread#interrupt}, so any task that
      * fails to respond to interrupts may never terminate.
-     *
+
+
+
      * @throws SecurityException {@inheritDoc}
      */
     public List<Runnable> shutdownNow() {
@@ -1598,6 +1624,8 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
     }
 
     /**
+     * 设置核心线程数。这会覆盖构造函数中设置的任何值。如果新值小于当前值，多余的现有线程将在下一次空闲时终止。
+     * 如果更大，将在需要时启动新线程来执行任何排队的任务。
      * Sets the core number of threads.  This overrides any value set
      * in the constructor.  If the new value is smaller than the
      * current value, excess existing threads will be terminated when
@@ -1616,6 +1644,8 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         if (workerCountOf(ctl.get()) > corePoolSize)
             interruptIdleWorkers();
         else if (delta > 0) {
+            //我们真的不知道“需要”多少新线程。作为一种启发式方法，预先启动足够多的新工作程序（最多达到新的核心大小）来处理队列中的当前任务数，
+            // 但如果在执行此操作时队列变空，则停止。
             // We don't really know how many new threads are "needed".
             // As a heuristic, prestart enough new workers (up to new
             // core size) to handle the current number of tasks in
@@ -1638,7 +1668,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         return corePoolSize;
     }
 
-    /**
+    /**启动一个核心线程，使其空闲等待工作。这将覆盖仅在执行新任务时启动核心线程的默认策略。如果所有核心线程都已启动，返回false
      * Starts a core thread, causing it to idly wait for work. This
      * overrides the default policy of starting core threads only when
      * new tasks are executed. This method will return {@code false}
@@ -2098,7 +2128,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         }
     }
 
-    /**
+    /**抛出异常
      * A handler for rejected tasks that throws a
      * {@code RejectedExecutionException}.
      */
@@ -2122,7 +2152,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         }
     }
 
-    /**
+    /**丢弃任务
      * A handler for rejected tasks that silently discards the
      * rejected task.
      */
