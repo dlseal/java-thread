@@ -154,7 +154,7 @@ import java.util.concurrent.locks.AbstractQueuedSynchronizer;
  * @author Doug Lea
  */
 public class CountDownLatch {
-    /**
+    /**CountDownLatch 的同步控制。使用 AQS 状态来表示计数。
      * Synchronization control For CountDownLatch.
      * Uses AQS state to represent count.
      */
@@ -169,10 +169,12 @@ public class CountDownLatch {
             return getState();
         }
 
+        // 判断共享资源是否为0，wait方法调用
         protected int tryAcquireShared(int acquires) {
             return (getState() == 0) ? 1 : -1;
         }
 
+        // 释放共享资源，countDown方法调用
         protected boolean tryReleaseShared(int releases) {
             // Decrement count; signal when transition to zero
             for (;;) {
@@ -200,7 +202,7 @@ public class CountDownLatch {
         this.sync = new Sync(count);
     }
 
-    /**
+    /**使当前线程等待，直到计数器为0或者当前线程已中断
      * Causes the current thread to wait until the latch has counted down to
      * zero, unless the thread is {@linkplain Thread#interrupt interrupted}.
      *
@@ -227,6 +229,7 @@ public class CountDownLatch {
      * @throws InterruptedException if the current thread is interrupted
      *         while waiting
      */
+    // 调用实现了AQS的锁的acquireSharedInterruptibly可响应中断获取共享资源方法，这里的1（arg）实际上没有使用到
     public void await() throws InterruptedException {
         sync.acquireSharedInterruptibly(1);
     }
@@ -272,6 +275,7 @@ public class CountDownLatch {
      * @throws InterruptedException if the current thread is interrupted
      *         while waiting
      */
+    //如果指定的等待时间过去，则返回值false。如果时间小于或等于零，则该方法根本不会等待。
     public boolean await(long timeout, TimeUnit unit)
         throws InterruptedException {
         return sync.tryAcquireSharedNanos(1, unit.toNanos(timeout));
@@ -280,7 +284,7 @@ public class CountDownLatch {
     /**
      * Decrements the count of the latch, releasing all waiting threads if
      * the count reaches zero.
-     *
+     *如果当前计数大于零，则递减。如果新计数为零，则为线程调度目的重新启用所有等待线程。
      * <p>If the current count is greater than zero then it is decremented.
      * If the new count is zero then all waiting threads are re-enabled for
      * thread scheduling purposes.

@@ -1340,7 +1340,9 @@ public abstract class AbstractQueuedSynchronizer
             doAcquireShared(arg);
     }
 
-    /**
+    /**在共享模式下获取，如果中断则中止
+     * 通过首先检查中断状态，然后至少调用一次tryAcquireShared来实现
+     * 否则线程排队，可能反复阻塞和解除阻塞,调用tryAcquireShared直到成功或线程被中断。
      * Acquires in shared mode, aborting if interrupted.  Implemented
      * by first checking interrupt status, then invoking at least once
      * {@link #tryAcquireShared}, returning on success.  Otherwise the
@@ -1361,7 +1363,9 @@ public abstract class AbstractQueuedSynchronizer
             doAcquireSharedInterruptibly(arg);
     }
 
-    /**
+    /**尝试在共享模式下获取，如果被中断则中止，如果给定的超时时间过去则失败。
+     * 通过首先检查中断状态来实现，然后至少调用一次 tryAcquireShared，成功返回。
+     * 否则，线程将排队，可能会重复阻塞和解除阻塞，调用tryAcquireShared 直到成功或线程被中断或超时。
      * Attempts to acquire in shared mode, aborting if interrupted, and
      * failing if the given timeout elapses.  Implemented by first
      * checking interrupt status, then invoking at least once {@link
