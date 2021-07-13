@@ -242,7 +242,7 @@ public abstract class Reference<T> {
 
     /* -- Referent accessor and setters -- */
 
-    /**
+    /**返回此引用对象的引用对象。如果此引用对象已被程序或垃圾收集器清除，则此方法返回null
      * Returns this reference object's referent.  If this reference object has
      * been cleared, either by the program or by the garbage collector, then
      * this method returns <code>null</code>.

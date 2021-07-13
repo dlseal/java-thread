@@ -30,6 +30,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
+ * 此类提供线程局部变量。
+ * 这些变量与它们的普通对应物不同，因为每个访问一个的线程（通过其 {@code get} 或 {@code set} 方法）都有自己的、独立初始化的变量副本。
+ * {@code ThreadLocal} 实例通常是希望将状态与线程相关联的类中的私有静态字段（例如，用户 ID 或事务 ID）。
  * This class provides thread-local variables.  These variables differ from
  * their normal counterparts in that each thread that accesses one (via its
  * {@code get} or {@code set} method) has its own, independently initialized
@@ -72,7 +75,10 @@ import java.util.function.Supplier;
  * @since   1.2
  */
 public class ThreadLocal<T> {
-    /**
+    /**ThreadLocals 依赖于附加到每个线程（Thread.threadLocals 和inheritableThreadLocals）的每线程线性探针哈希映射。
+     * ThreadLocal 对象充当键，通过 threadLocalHashCode 进行搜索。
+     * 这是一个自定义哈希代码（仅在 ThreadLocalMaps 中有用），它消除了在相同线程使用连续构造的 ThreadLocals 的常见情况下的冲突，
+     * 同时在不太常见的情况下保持良好行为。
      * ThreadLocals rely on per-thread linear-probe hash maps attached
      * to each thread (Thread.threadLocals and
      * inheritableThreadLocals).  The ThreadLocal objects act as keys,
@@ -82,6 +88,7 @@ public class ThreadLocal<T> {
      * are used by the same threads, while remaining well-behaved in
      * less common cases.
      */
+    // 在ThreadLocalMap中是以thread对象为key,通过threadLocalHashCode可以快速查找
     private final int threadLocalHashCode = nextHashCode();
 
     /**
@@ -285,7 +292,9 @@ public class ThreadLocal<T> {
         }
     }
 
-    /**
+    /**不会在 ThreadLocal 类之外导出任何操作。
+     * 该类是包私有的，以允许在类 Thread 中声明字段。为了帮助处理非常大和长期存在的用法，
+     * 哈希表条目使用 Wea​​kReferences 作为键。但是，由于不使用引用队列，因此只有在表开始耗尽空间时才能保证删除陈旧条目。
      * ThreadLocalMap is a customized hash map suitable only for
      * maintaining thread local values. No operations are exported
      * outside of the ThreadLocal class. The class is package private to
@@ -320,7 +329,7 @@ public class ThreadLocal<T> {
          */
         private static final int INITIAL_CAPACITY = 16;
 
-        /**
+        /**表格，根据需要调整大小。 table.length 必须始终是 2 的幂
          * The table, resized as necessary.
          * table.length MUST always be a power of two.
          */
@@ -370,7 +379,7 @@ public class ThreadLocal<T> {
             setThreshold(INITIAL_CAPACITY);
         }
 
-        /**
+        /**从给定的父映射构造一个包含所有可继承线程本地的新映射。仅由 createInheritedMap 调用。
          * Construct a new map including all Inheritable ThreadLocals
          * from given parent map. Called only by createInheritedMap.
          *
@@ -575,7 +584,8 @@ public class ThreadLocal<T> {
                 cleanSomeSlots(expungeStaleEntry(slotToExpunge), len);
         }
 
-        /**
+        /**通过重新散列位于 staleSlot 和下一个空槽之间的任何可能冲突的条目来清除陈旧的条目。
+         * 这也会清除在尾随空值之前遇到的任何其他陈旧条目。
          * Expunge a stale entry by rehashing any possibly colliding entries
          * lying between staleSlot and the next null slot.  This also expunges
          * any other stale entries encountered before the trailing null.  See
