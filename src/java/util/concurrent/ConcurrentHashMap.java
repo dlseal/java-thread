@@ -72,7 +72,7 @@ import java.util.function.ToLongBiFunction;
 import java.util.function.ToLongFunction;
 import java.util.stream.Stream;
 
-/**
+/**哈希表支持检索的完全并发性和更新的高期望并发性.
  * A hash table supporting full concurrency of retrievals and
  * high expected concurrency for updates. This class obeys the
  * same functional specification as {@link java.util.Hashtable}, and
@@ -508,24 +508,28 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * because the top two bits of 32bit hash fields are used for
      * control purposes.
      */
+    // 最大容量
     private static final int MAXIMUM_CAPACITY = 1 << 30;
 
     /**
      * The default initial table capacity.  Must be a power of 2
      * (i.e., at least 1) and at most MAXIMUM_CAPACITY.
      */
+    // m默认容量
     private static final int DEFAULT_CAPACITY = 16;
 
     /**
      * The largest possible (non-power of two) array size.
      * Needed by toArray and related methods.
      */
+    // 数组最大长度
     static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
 
     /**
      * The default concurrency level for this table. Unused but
      * defined for compatibility with previous versions of this class.
      */
+    // 默认并发量
     private static final int DEFAULT_CONCURRENCY_LEVEL = 16;
 
     /**
@@ -535,6 +539,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * simpler to use expressions such as {@code n - (n >>> 2)} for
      * the associated resizing threshold.
      */
+    // 负载因子
     private static final float LOAD_FACTOR = 0.75f;
 
     /**
@@ -545,6 +550,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * tree removal about conversion back to plain bins upon
      * shrinkage.
      */
+    // list转化为树的条件
     static final int TREEIFY_THRESHOLD = 8;
 
     /**
@@ -552,6 +558,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * resize operation. Should be less than TREEIFY_THRESHOLD, and at
      * most 6 to mesh with shrinkage detection under removal.
      */
+    // 树转化为list的条件
     static final int UNTREEIFY_THRESHOLD = 6;
 
     /**
@@ -560,6 +567,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * The value should be at least 4 * TREEIFY_THRESHOLD to avoid
      * conflicts between resizing and treeification thresholds.
      */
+    // 树的最优容量，此值至少为转化树条件的4倍
     static final int MIN_TREEIFY_CAPACITY = 64;
 
     /**
@@ -666,6 +674,11 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
     /* ---------------- Static utilities -------------- */
 
     /**
+     * 散列 (XOR) 较高位的哈希值降低并强制最高位为 0。由于该表使用二次幂掩码，因此仅在当前掩码之上位有所不同的一组哈希值将始终发生冲突。
+     * （众所周知的例子是在小表中保存连续整数的浮点键集。）所以我们应用一种变换来向下传播较高位的影响。
+     * 位扩展的速度、效用和质量之间存在权衡。因为许多常见的哈希集已经合理分布（因此不会从传播中受益），
+     * 并且因为我们使用树来处理 bin 中的大量冲突，所以我们只是以最便宜的方式对一些移位的位进行异或以减少系统损失，
+     * 以及合并最高位的影响，否则由于表边界而永远不会在索引计算中使用。
      * Spreads (XORs) higher bits of hash to lower and also forces top
      * bit to 0. Because the table uses power-of-two masking, sets of
      * hashes that vary only in bits above the current mask will
@@ -685,7 +698,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
         return (h ^ (h >>> 16)) & HASH_BITS;
     }
 
-    /**
+    /**为给定的所需容量返回表大小的 2 次幂。参见 Hackers Delight，第 3.2 节
      * Returns a power of two table size for the given desired capacity.
      * See Hackers Delight, sec 3.2
      */
@@ -766,7 +779,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
 
     /* ---------------- Fields -------------- */
 
-    /**
+    /**bin 数组。第一次插入时延迟初始化。大小始终是 2 的幂。由迭代器直接访问。
      * The array of bins. Lazily initialized upon first insertion.
      * Size is always a power of two. Accessed directly by iterators.
      */
@@ -777,14 +790,15 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      */
     private transient volatile Node<K,V>[] nextTable;
 
-    /**
+    /**基本计数器值，主要在没有争用时使用，但也可作为表初始化竞争期间的后备。通过 CAS 更新。
      * Base counter value, used mainly when there is no contention,
      * but also as a fallback during table initialization
      * races. Updated via CAS.
      */
     private transient volatile long baseCount;
 
-    /**
+    /**表初始化和调整大小控制。如果为负，则表正在初始化或调整大小：-1 表示初始化，否则 -（1 + 活动调整大小线程的数量）。
+     * 否则，当 table 为 null 时，保存创建时使用的初始表大小，或默认为 0。初始化后，保存下一个要调整表格大小的元素计数值。
      * Table initialization and resizing control.  When negative, the
      * table is being initialized or resized: -1 for initialization,
      * else -(1 + the number of active resizing threads).  Otherwise,
@@ -823,7 +837,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
     public ConcurrentHashMap() {
     }
 
-    /**
+    /**指定容量创建
      * Creates a new, empty map with an initial table size
      * accommodating the specified number of elements without the need
      * to dynamically resize.
@@ -871,7 +885,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
         this(initialCapacity, loadFactor, 1);
     }
 
-    /**
+    /**根据给定的元素数 ({@code initialCapacity})、表密度 ({@code loadFactor}) 和并发更新线程数 ({@code concurrencyLevel}) 创建一个具有初始表大小的新空映射。
      * Creates a new, empty map with an initial table size based on
      * the given number of elements ({@code initialCapacity}), table
      * density ({@code loadFactor}), and number of concurrently
@@ -1009,10 +1023,14 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
     /** Implementation for put and putIfAbsent */
     final V putVal(K key, V value, boolean onlyIfAbsent) {
         if (key == null || value == null) throw new NullPointerException();
+        // 计算key的hash值
         int hash = spread(key.hashCode());
+        //
         int binCount = 0;
+
         for (Node<K,V>[] tab = table;;) {
             Node<K,V> f; int n, i, fh;
+            //
             if (tab == null || (n = tab.length) == 0)
                 tab = initTable();
             else if ((f = tabAt(tab, i = (n - 1) & hash)) == null) {
