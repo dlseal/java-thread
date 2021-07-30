@@ -709,6 +709,7 @@ public class HashMap<K,V>
         }
         int hash = (key == null) ? 0 : hash(key);
         int i = indexFor(hash, table.length);
+        // 这是使用两个变量，是为了将移除元素的前驱和后继关联起来
         Entry<K,V> prev = table[i];
         Entry<K,V> e = prev;
 
@@ -719,6 +720,7 @@ public class HashMap<K,V>
                 ((k = e.key) == key || (key != null && key.equals(k)))) {
                 modCount++;
                 size--;
+                // 关联后继元素
                 if (prev == e)
                     table[i] = next;
                 else
@@ -733,16 +735,21 @@ public class HashMap<K,V>
         return e;
     }
 
-    /**
+    /**使用 {@code Map.Entry.equals()} 进行匹配的 EntrySet 删除的特殊版本。
      * Special version of remove for EntrySet using {@code Map.Entry.equals()}
      * for matching.
      */
     final Entry<K,V> removeMapping(Object o) {
+        // 如果map中没有元素，或者o不是entry
         if (size == 0 || !(o instanceof Map.Entry))
             return null;
 
+        //上转型
         Map.Entry<K,V> entry = (Map.Entry<K,V>) o;
+
+        //比removeEntryForKey多了个获取key，后续处理方式一样
         Object key = entry.getKey();
+        
         int hash = (key == null) ? 0 : hash(key);
         int i = indexFor(hash, table.length);
         Entry<K,V> prev = table[i];
@@ -809,7 +816,7 @@ public class HashMap<K,V>
         return false;
     }
 
-    /**
+    /**返回此 <tt>HashMap<tt> 实例的浅拷贝：键和值本身不会被克隆。
      * Returns a shallow copy of this <tt>HashMap</tt> instance: the keys and
      * values themselves are not cloned.
      *
@@ -927,6 +934,7 @@ public class HashMap<K,V>
     }
 
     /**子类覆盖它以改变 HashMap(Map)、clone 和 readObject 的行为。
+     * 直接创建entry，不会检查容量
      * Like addEntry except that this version is used when creating entries
      * as part of Map construction or "pseudo-construction" (cloning,
      * deserialization).  This version needn't worry about resizing the table.
