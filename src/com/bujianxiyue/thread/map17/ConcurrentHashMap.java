@@ -452,14 +452,20 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
         final V put(K key, int hash, V value, boolean onlyIfAbsent) {
 
             // 加锁获取entry,每个segment都是一把锁
+            // 获取方式：1.通过hash值和table(size-1)获取index
+            //          2.通过当前段和index获取首节点
+            //          3.遍历首节点，找到对应key的entry
+            //          4.找到后entry进行加锁
             HashEntry<K,V> node = tryLock() ? null :
                 scanAndLockForPut(key, hash, value);
             V oldValue;
             try {
                 HashEntry<K,V>[] tab = table;
                 int index = (tab.length - 1) & hash;
+                // index<<TSHIFT+TBASE 偏移量获取table的entry
                 HashEntry<K,V> first = entryAt(tab, index);
                 for (HashEntry<K,V> e = first;;) {
+                    // 首节点不为空，遍历查找链表是否有当前key的entry,找到了，则根据是否替换进行处理
                     if (e != null) {
                         K k;
                         if ((k = e.key) == key ||
@@ -474,6 +480,9 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                         e = e.next;
                     }
                     else {
+                        // 首节点为空，或者没有找到当前key对应的entry,首先判断加锁成功返回的entry是否为空，
+                        // 然后将查询出的首节点的后继元素设置为firs或者首节点设置为新节点并且后继为first
+                        //这里的步骤是为了其余线程在当前当前线程加锁前的操作能够看到？
                         if (node != null)
                             node.setNext(first);
                         else
@@ -482,6 +491,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                         if (c > threshold && tab.length < MAXIMUM_CAPACITY)
                             rehash(node);
                         else
+                            // 如果node为null,说明表里没有存在，则进行重新赋值
                             setEntryAt(tab, index, node);
                         ++modCount;
                         count = c;
@@ -501,7 +511,10 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
          */
         @SuppressWarnings("unchecked")
         private void rehash(HashEntry<K,V> node) {
-            /*
+            /*将每个列表中的节点重新分类为新表。因为我们使用的是二次幂扩展，所以每个 bin 中的元素必须保持相同的索引，
+            或者以二次幂的偏移量移动。我们通过捕获可以重用旧节点的情况来消除不必要的节点创建，因为它们的下一个字段不会改变。
+            据统计，在默认阈值下，当表翻倍时，只有大约六分之一需要克隆。一旦它们不再被可能处于并发遍历表中的任何读取器线程引用，
+            它们替换的节点将是可垃圾回收的。入口访问使用普通数组索引，因为它们之后是易失性表写入。
              * Reclassify nodes in each list to new table.  Because we
              * are using power-of-two expansion, the elements from
              * each bin must either stay at same index, or move with a
@@ -532,6 +545,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                     if (next == null)   //  Single node on list
                         newTable[idx] = e;
                     else { // Reuse consecutive sequence at same slot
+                        // 找到最后一个需要在新表中index与旧表不同的节点。这里应该是节点重复利用
                         HashEntry<K,V> lastRun = e;
                         int lastIdx = idx;
                         for (HashEntry<K,V> last = next;
@@ -545,6 +559,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                         }
                         newTable[lastIdx] = lastRun;
                         // Clone remaining nodes
+                        // 新旧表index不一致的节点重新重建节点
                         for (HashEntry<K,V> p = e; p != lastRun; p = p.next) {
                             V v = p.value;
                             int h = p.hash;
@@ -555,6 +570,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                     }
                 }
             }
+            // 新建节点
             int nodeIndex = node.hash & sizeMask; // add the new node
             node.setNext(newTable[nodeIndex]);
             newTable[nodeIndex] = node;
@@ -612,7 +628,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
             return node;
         }
 
-        /**
+        /**在尝试获取移除或替换操作的锁时扫描包含给定键的节点。返回时，保证持有锁。
+         * 请注意，即使找不到密钥，我们也必须锁定，以确保更新的顺序一致性。
          * Scans for a node containing the given key while trying to
          * acquire lock for a remove or replace operation. Upon
          * return, guarantees that lock is held.  Note that we must
