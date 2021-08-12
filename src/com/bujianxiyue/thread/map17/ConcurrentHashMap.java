@@ -666,6 +666,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
          */
         final V remove(Object key, int hash, Object value) {
             if (!tryLock())
+                // 加锁
                 scanAndLock(key, hash);
             V oldValue = null;
             try {
@@ -680,9 +681,11 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                         (e.hash == hash && key.equals(k))) {
                         V v = e.value;
                         if (value == null || value == v || value.equals(v)) {
+                            // 前驱为null，说明当前节点为首节点，就用后继来填充
                             if (pred == null)
                                 setEntryAt(tab, index, next);
                             else
+                                // 前驱有节点，那么将前驱的后继设置为当前节点的后继
                                 pred.setNext(next);
                             ++modCount;
                             --count;
